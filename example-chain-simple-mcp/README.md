@@ -277,7 +277,12 @@ poetry build
 }
 ```
 
-Once deployed, Stratio GenAI API automatically registers the embedded MCP server as a tool provider in Stratio GenAI LiteLLM, making `get_current_time` and `format_text` available for other applications.
+Once deployed, Stratio GenAI API automatically registers the embedded MCP server as a tool provider in Stratio GenAI LiteLLM, making its tools available for other applications.
+
+The MCP server name and description are defined in `SimpleMcpChain.chain_params()` with the
+`mcp_server_name` and `mcp_server_description` fields of `GenAiChainParams`. `mcp_server_name` is required
+when a chain implements `mcp_server()`. You can check the registered server, and the alias used in its URL
+(`https://<host>/genai-litellm/<mcp-alias>/mcp`), in the "MCP Servers" page of the LiteLLM UI.
 
 5. Invoke the chain with `POST /v1/chains/simple_mcp_chain/invoke`:
 

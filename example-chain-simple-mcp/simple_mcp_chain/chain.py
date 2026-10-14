@@ -12,7 +12,7 @@ written authorization from Stratio Big Data Inc., Sucursal en España.
 from typing import Optional
 
 from fastmcp import FastMCP
-from genai_core.chain.base import BaseGenAiChain
+from genai_core.chain.base import BaseGenAiChain, GenAiChainParams
 from genai_core.logger.logger import log
 from langchain_core.runnables import Runnable, chain
 
@@ -71,6 +71,25 @@ class SimpleMcpChain(BaseGenAiChain):
             }
 
         return _process
+
+    def chain_params(self) -> GenAiChainParams:
+        """Defines the chain parameters.
+
+        mcp_server_name is required when the chain implements mcp_server(): it is
+        the name of the MCP server registered in Stratio GenAI LiteLLM when the
+        chain is deployed. mcp_server_description is used by LiteLLM to present
+        the server to agents.
+
+        :return: The chain parameters.
+        """
+        return GenAiChainParams(
+            mcp_server_name="Simple MCP Example",
+            mcp_server_description=(
+                "Utility tools to get the current UTC time, format text and count "
+                "its words and characters, plus a Mad Hatter tool that answers "
+                "requests with a rhyming riddle."
+            ),
+        )
 
     def mcp_server(self, mcp: FastMCP) -> Optional[FastMCP]:
         """Configures and returns the embedded MCP server.
