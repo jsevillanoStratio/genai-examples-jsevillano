@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../example-chain-basic-actor"
+		},
+		{
+			"path": "../example-chain-simple-mcp"
+		},
+		{
+			"path": "../example-chain-opensearch"
+		}
+	],
+	"settings": {}
+}
