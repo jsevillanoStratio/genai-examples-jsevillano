@@ -19,6 +19,7 @@ from genai_core.services.opensearch.opensearch_service import OpenSearchService
 from langchain_core.runnables import Runnable, chain
 
 from .actors.mad_hatter_actor import MadHatterActor
+from .embeddings import StratioLitellmGatewayEmbeddings
 from .mcp_tools import configure_mcp_tools
 
 
@@ -33,18 +34,25 @@ from .mcp_tools import configure_mcp_tools
 # exposes it as the mad_hatter MCP tool, showing how to use actors from MCP.
 # Likewise, when an opensearch_url is configured, the chain connects to
 # OpenSearch (as in example-chain-opensearch) and exposes the
-# run_opensearch_query MCP tool.
+# run_opensearch_query, create_index and describe_vector_index MCP tools, and when
+# an embeddings_endpoint is configured, it exposes the generate_embeddings MCP tool
+# using that LiteLLM embedding model. With both, it also exposes add_records and
+# vector_search, which compute the vectors on the server for RAG over any index
+# with knn_vector fields.
 class SimpleMcpChain(BaseGenAiChain):
     # Actor used by the mad_hatter MCP tool. None when no LLM is configured.
     mad_hatter_actor: Optional[MadHatterActor]
     # Service used by the run_opensearch_query MCP tool. None when no OpenSearch is configured.
     opensearch_service: Optional[OpenSearchService]
+    # Embeddings model used by the generate_embeddings MCP tool. None when not configured.
+    embeddings: Optional[StratioLitellmGatewayEmbeddings]
 
     def __init__(
         self,
         gateway_endpoint: Optional[str] = None,
         llm_timeout: int = 30,
         opensearch_url: Optional[str] = None,
+        embeddings_endpoint: Optional[str] = None,
     ):
         """
         Initializes the SimpleMcpChain.
@@ -54,6 +62,9 @@ class SimpleMcpChain(BaseGenAiChain):
         :param llm_timeout: Timeout for the LLM model, default is 30 seconds.
         :param opensearch_url: The URL of the OpenSearch instance. If not provided, the
             run_opensearch_query MCP tool is not registered.
+        :param embeddings_endpoint: The ID of the model group in Stratio GenAI LiteLLM pointing
+            to the embedding model. If not provided, the generate_embeddings MCP tool is not
+            registered.
         """
         log.info("Preparing Simple MCP Example chain")
         self.mad_hatter_actor = None
@@ -70,6 +81,16 @@ class SimpleMcpChain(BaseGenAiChain):
         else:
             log.info(
                 "No opensearch_url configured: run_opensearch_query MCP tool disabled"
+            )
+        self.embeddings = None
+        if embeddings_endpoint:
+            self.embeddings = StratioLitellmGatewayEmbeddings(
+                endpoint=embeddings_endpoint,
+                timeout=llm_timeout,
+            )
+        else:
+            log.info(
+                "No embeddings_endpoint configured: generate_embeddings MCP tool disabled"
             )
         log.info("Simple MCP Example chain ready!")
 
@@ -142,7 +163,10 @@ class SimpleMcpChain(BaseGenAiChain):
             mcp_server_description=(
                 "Utility tools to get the current UTC time, format text and count "
                 "its words and characters, plus a Mad Hatter tool that answers "
-                "requests with a rhyming riddle and a tool to run OpenSearch queries."
+                "requests with a rhyming riddle, tools to run OpenSearch queries and "
+                "create and describe indices, a tool to generate text embeddings, and "
+                "RAG tools to add records to a vector index (computing their vectors) "
+                "and to retrieve the chunks most similar to a question."
             ),
         )
 

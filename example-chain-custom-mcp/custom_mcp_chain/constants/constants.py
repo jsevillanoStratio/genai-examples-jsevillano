@@ -16,3 +16,7 @@ USER_REQUEST_EXPLANATION = (
 
 # Basic Chain specific keys
 CHAIN_KEY_USER_NAME = "username"
+
+# Limits of the vector index MCP tools
+ADD_RECORDS_MAX_RECORDS = 500
+VECTOR_SEARCH_MAX_K = 100

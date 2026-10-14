@@ -21,6 +21,11 @@ This example is the practical counterpart of the MCP server section in the [GenA
 | `analyze_text` | **Yes** | Returns word count and character count by delegating to `chain.chain().invoke()`. |
 | `mad_hatter` | Uses an actor | Answers a request with a rhyming riddle, as the Mad Hatter. Only registered when `gateway_endpoint` is configured. |
 | `run_opensearch_query` | Uses OpenSearch | Runs an OpenSearch Query DSL search on an index and returns the hits. Only registered when `opensearch_url` is configured. |
+| `generate_embeddings` | Uses an embedding model | Returns an embedding vector for each input text. Only registered when `embeddings_endpoint` is configured. |
+| `create_index` | Uses OpenSearch | Creates an index with the given settings and mappings (e.g. a `knn_vector` field). Write roles only. Only registered when `opensearch_url` is configured. |
+| `describe_vector_index` | Uses OpenSearch | Lists the `knn_vector` fields of an index (dimension, space type, engine) and the type of the other fields. Only registered when `opensearch_url` is configured. |
+| `add_records` | Uses OpenSearch + embedding model | Indexes records, replacing `{"$embed": "<field>"}` pointers with the embedding of that field. Write roles only. Only registered when both `opensearch_url` and `embeddings_endpoint` are configured. |
+| `vector_search` | Uses OpenSearch + embedding model | Embeds a question and returns the `k` most similar chunks of an index (RAG retrieval). Only registered when both are configured. |
 
 `get_current_time` and `format_text` are pure utility functions independent of the chain logic.
 `analyze_text` shows the pattern of calling the chain from an MCP tool.
@@ -55,6 +60,64 @@ Set `opensearch_url` in the chain config to enable it. The chain connects to Ope
 - Locally, `main.py` reads the `OPENSEARCH_URL` environment variable, which points to the developer proxy
   (e.g. `https://genai-developer-proxy-loadbalancer.<tenant>-genai.<domain>:8080/service/opensearch/`).
 - When deployed in GenAI API, use the internal URL (e.g. `https://opensearch-genai.stratio-genai:9200`).
+
+### Generating embeddings (`generate_embeddings`)
+
+Set `embeddings_endpoint` in the chain config to the LiteLLM model group of an embedding model
+(e.g. `text-embedding-3-large`, registered in LiteLLM with `mode: embedding`).
+
+genai-core 0.7 only provides a chat model for Stratio GenAI LiteLLM (`StratioLitellmGatewayChat`, a `ChatOpenAI`).
+`StratioLitellmGatewayEmbeddings` in `custom_mcp_chain/embeddings.py` is a LangChain `Embeddings` that calls
+the OpenAI-compatible `/embeddings` route of LiteLLM with the shared `LitellmGatewayClient` of genai-core,
+which already handles the URL, the mTLS certificates and the API key. That configuration comes from the
+`GENAI_LITELLM_*` environment variables, which are set automatically in GenAI API and by `local-env` locally.
+As in `mad_hatter`, the request includes the `x-on-behalf-of` header of the nominal user.
+
+Arguments: `texts` (list of strings) and optionally `dimensions` (for models that support it, such as
+`text-embedding-3-*`). The response contains `model`, `dimensions` and `embeddings` (one vector per text,
+in the same order).
+
+### RAG over any vector index (`create_index`, `describe_vector_index`, `add_records`, `vector_search`)
+
+Chaining `generate_embeddings` and `run_opensearch_query` does not work well: the LLM has to copy
+thousands of floats from one tool call to the next, and it truncates or changes them. These tools compute
+the vectors on the server instead, so the LLM only handles text:
+
+1. `create_index` creates the index. Map the vector field as `knn_vector` with `"index.knn": true`:
+   ```json
+   {"settings": {"index": {"knn": true}},
+    "mappings": {"properties": {
+      "text": {"type": "text"},
+      "chapter": {"type": "integer"},
+      "embedding": {"type": "knn_vector", "dimension": 1024,
+                    "method": {"name": "hnsw", "engine": "lucene", "space_type": "cosinesimil"}}}}}
+   ```
+2. `describe_vector_index` returns the `knn_vector` fields of an existing index, with their `dimension`,
+   `space_type` and `engine`, so an agent can work with indices it does not know.
+3. `add_records` indexes up to 500 records per call. In the vector field, put a pointer instead of a vector:
+   `{"$embed": "text"}` embeds the `text` field, and `{"$embed": ["title", "text"]}` embeds both joined with
+   newlines. The optional `_id` key is used as the document id.
+   ```json
+   {"_id": "alice-ch1-0", "text": "Alice follows the White Rabbit", "chapter": 1, "embedding": {"$embed": "text"}}
+   ```
+4. `vector_search` embeds `question` and runs a k-NN query. Arguments: `index`, `vector_field` (optional if the
+   index has a single one), `k` (1-100), `min_score`, `text_field` (returned as the chunk `text`; the rest of the
+   document is returned as `metadata`), `filter` (Query DSL applied during the k-NN search; supported by the
+   `lucene` and `faiss` engines) and `source_fields`. The vectors are never returned.
+
+Both `add_records` and `vector_search` read the `dimension` of the vector field from the index mapping. The
+chain's embedding model is asked for that dimension when it differs from its native one (supported by
+`text-embedding-3-*`), and the tools fail if the vectors do not match it.
+
+Notes:
+- The index must be filled and queried with the **same embedding model** (`embeddings_endpoint`), or the
+  results are meaningless.
+- `min_score` is an OpenSearch score, not a raw similarity: for `cosinesimil` it is `(1 + cosine) / 2`
+  (0 to 1), and for `l2` it is `1 / (1 + distance²)`. It is applied after the `k` nearest are found, so
+  fewer than `k` chunks may be returned.
+- OpenSearch is accessed with the chain's identity, not the user's: any user allowed to call the tools can
+  read every index the chain can read. `create_index` and `add_records` require a write role
+  (`MCP_WRITE_ROLES`).
 
 ## Local deployment
 
@@ -280,13 +343,14 @@ poetry build
 {
   "chain_id": "genai-example.custom_mcp_tests",
   "chain_config": {
-    "package_id": "custom_mcp_chain-0.7.0rc2",
+    "package_id": "custom_mcp_chain-0.7.0rc4",
     "chain_module": "custom_mcp_chain.chain",
     "chain_class": "SimpleMcpChain",
     "chain_params": {
       "llm_timeout": 30,
       "gateway_endpoint": "gpt-5.4-mini",
-      "opensearch_url": "https://opensearch-genai.stratio-genai:9200"
+      "opensearch_url": "https://opensearch-genai.stratio-genai:9200",
+      "embeddings_endpoint": "text-embedding-3-large"
     }
   }
 }

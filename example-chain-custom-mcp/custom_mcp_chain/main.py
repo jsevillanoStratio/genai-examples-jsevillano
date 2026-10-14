@@ -78,6 +78,13 @@ def main(chain_config):
       (only when "gateway_endpoint" is configured).
     - run_opensearch_query: runs an OpenSearch search query on an index
       (only when "opensearch_url" is configured).
+    - create_index / describe_vector_index: create an index and describe its
+      knn_vector fields (only when "opensearch_url" is configured).
+    - generate_embeddings: generates text embeddings with a LiteLLM embedding model
+      (only when "embeddings_endpoint" is configured).
+    - add_records / vector_search: index records computing their vectors from
+      {"$embed": "<field>"} pointers, and retrieve the chunks most similar to a
+      question (only when both "opensearch_url" and "embeddings_endpoint" are set).
     """
     app = GenAiServer(
         module_name="custom_mcp_chain.chain",
@@ -100,5 +107,8 @@ if __name__ == "__main__":
         # https://opensearch-genai.stratio-genai:9200
         # Remove it (or leave OPENSEARCH_URL unset) to disable the run_opensearch_query MCP tool.
         "opensearch_url": os.getenv("OPENSEARCH_URL"),
+        # embeddings_endpoint: The ID of the model group in Stratio GenAI LiteLLM pointing to
+        # an embedding model. Remove it to disable the generate_embeddings MCP tool.
+        "embeddings_endpoint": "text-embedding-3-large",
     }
     main(chain_config)

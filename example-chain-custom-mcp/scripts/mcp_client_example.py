@@ -18,9 +18,11 @@ Prerequisites:
   2. Run this script from the example directory:
        poetry run python scripts/mcp_client_example.py
 
-The mad_hatter and run_opensearch_query tools are optional: they are only
-called when the server lists them, i.e. when the chain runs with
-"gateway_endpoint" and "opensearch_url" respectively (see main.py).
+The mad_hatter, run_opensearch_query and generate_embeddings tools are
+optional: they are only called when the server lists them, i.e. when the chain
+runs with "gateway_endpoint", "opensearch_url" and "embeddings_endpoint"
+respectively (see main.py). The RAG tools (create_index, add_records and
+vector_search) need both "opensearch_url" and "embeddings_endpoint".
 """
 
 import asyncio
@@ -47,6 +49,55 @@ AUTH_META = {
 # OPENSEARCH_QUERY = {"size": 3, "query": {"match": {"value": "Scott"}}}
 OPENSEARCH_INDEX = "*"
 OPENSEARCH_QUERY = {"size": 3, "query": {"match_all": {}}}
+
+# Texts and optional output size used by generate_embeddings
+EMBEDDINGS_TEXTS = ["hello mcp world", "the Queen of Hearts"]
+EMBEDDINGS_DIMENSIONS = 256
+
+# Vector index used by the RAG tools. create_index and add_records require a write
+# role, so they are called with this metadata.
+RAG_AUTH_META = {
+    "genai_state": {**AUTH_META["genai_state"], "client_role": "contributor"}
+}
+RAG_INDEX = "custom_mcp_rag_example"
+RAG_INDEX_BODY = {
+    "settings": {"index": {"knn": True}},
+    "mappings": {
+        "properties": {
+            "text": {"type": "text"},
+            "chapter": {"type": "integer"},
+            "embedding": {
+                "type": "knn_vector",
+                "dimension": 1024,
+                "method": {
+                    "name": "hnsw",
+                    "engine": "lucene",
+                    "space_type": "cosinesimil",
+                },
+            },
+        }
+    },
+}
+# The "$embed" pointer asks add_records to fill "embedding" with the embedding of "text"
+RAG_RECORDS = [
+    {
+        "_id": f"alice-{i}",
+        "text": text,
+        "chapter": chapter,
+        "embedding": {"$embed": "text"},
+    }
+    for i, (chapter, text) in enumerate(
+        [
+            (1, "Alice follows the White Rabbit down the rabbit hole."),
+            (7, "The Mad Hatter hosts an endless tea party with the March Hare."),
+            (
+                8,
+                "The Queen of Hearts shouts 'Off with their heads!' at the croquet game.",
+            ),
+        ]
+    )
+]
+RAG_QUESTION = "Who gives a tea party?"
 
 
 async def main() -> None:
@@ -155,6 +206,89 @@ async def main() -> None:
         else:
             print(
                 "Skipping run_opensearch_query (chain running without opensearch_url)"
+            )
+        print()
+
+        # ------------------------------------------------------------------
+        # Call generate_embeddings — uses a LiteLLM embedding model.
+        # Only registered when the chain runs with "embeddings_endpoint".
+        # ------------------------------------------------------------------
+        if "generate_embeddings" in tool_names:
+            print(
+                f"Calling generate_embeddings(texts={EMBEDDINGS_TEXTS}, "
+                f"dimensions={EMBEDDINGS_DIMENSIONS}) ..."
+            )
+            result = await client.call_tool(
+                "generate_embeddings",
+                {"texts": EMBEDDINGS_TEXTS, "dimensions": EMBEDDINGS_DIMENSIONS},
+                meta=AUTH_META,
+            )
+            if result.is_error or result.structured_content.get("error"):
+                print(f"  ERROR: {result.structured_content}")
+            else:
+                print(f"  model:      {result.structured_content['model']}")
+                print(f"  dimensions: {result.structured_content['dimensions']}")
+                for text, vector in zip(
+                    EMBEDDINGS_TEXTS, result.structured_content["embeddings"]
+                ):
+                    print(f"  - {text!r}: {vector[:3]} ...")
+        else:
+            print(
+                "Skipping generate_embeddings (chain running without embeddings_endpoint)"
+            )
+        print()
+
+        # ------------------------------------------------------------------
+        # RAG: create a vector index, add records (the vectors are computed by
+        # the server from "$embed" pointers) and retrieve the closest chunks.
+        # Only registered when the chain runs with "opensearch_url" and
+        # "embeddings_endpoint".
+        # ------------------------------------------------------------------
+        if "vector_search" in tool_names:
+            print(f"Calling create_index(index={RAG_INDEX!r}) ...")
+            result = await client.call_tool(
+                "create_index",
+                {"index": RAG_INDEX, "body": RAG_INDEX_BODY},
+                meta=RAG_AUTH_META,
+            )
+            # Fails when the index already exists, e.g. on a second run
+            print(f"  {result.structured_content}")
+
+            print(
+                f"Calling add_records(index={RAG_INDEX!r}, {len(RAG_RECORDS)} records) ..."
+            )
+            result = await client.call_tool(
+                "add_records",
+                {"index": RAG_INDEX, "records": RAG_RECORDS},
+                meta=RAG_AUTH_META,
+            )
+            if result.is_error or result.structured_content.get("error"):
+                print(f"  ERROR: {result.structured_content}")
+            else:
+                print(f"  indexed: {result.structured_content['indexed']}")
+
+            print(f"Calling vector_search(question={RAG_QUESTION!r}) ...")
+            result = await client.call_tool(
+                "vector_search",
+                {
+                    "question": RAG_QUESTION,
+                    "index": RAG_INDEX,
+                    "k": 2,
+                    "text_field": "text",
+                },
+                meta=AUTH_META,
+            )
+            if result.is_error or result.structured_content.get("error"):
+                print(f"  ERROR: {result.structured_content}")
+            else:
+                for chunk in result.structured_content["chunks"]:
+                    print(
+                        f"  - {chunk['score']:.3f} {chunk['text']} {chunk['metadata']}"
+                    )
+        else:
+            print(
+                "Skipping RAG tools (chain running without opensearch_url "
+                "and embeddings_endpoint)"
             )
         print()
 
