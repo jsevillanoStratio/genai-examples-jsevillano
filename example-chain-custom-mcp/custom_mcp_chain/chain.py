@@ -138,7 +138,7 @@ class SimpleMcpChain(BaseGenAiChain):
         :return: The chain parameters.
         """
         return GenAiChainParams(
-            mcp_server_name="Simple MCP Example",
+            mcp_server_name="Custom MCP Tests",
             mcp_server_description=(
                 "Utility tools to get the current UTC time, format text and count "
                 "its words and characters, plus a Mad Hatter tool that answers "

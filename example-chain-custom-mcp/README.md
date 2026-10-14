@@ -278,7 +278,7 @@ poetry build
 
 ```json
 {
-  "chain_id": "genai-example.mcp_tests",
+  "chain_id": "genai-example.custom_mcp_tests",
   "chain_config": {
     "package_id": "custom_mcp_chain-0.7.0rc2",
     "chain_module": "custom_mcp_chain.chain",
