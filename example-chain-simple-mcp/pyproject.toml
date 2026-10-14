@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "simple-mcp-chain"
-version = "0.7.0a0"
+version = "0.7.0c2"
 description = "A chain showing how to embed an MCP server with utility tools in a GenAI chain"
 authors = []
 

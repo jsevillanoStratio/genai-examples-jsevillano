@@ -20,6 +20,7 @@ This example is the practical counterpart of the MCP server section in the [GenA
 | `format_text` | No | Formats a string: `upper`, `lower`, `title`, or `reverse`. |
 | `analyze_text` | **Yes** | Returns word count and character count by delegating to `chain.chain().invoke()`. |
 | `mad_hatter` | Uses an actor | Answers a request with a rhyming riddle, as the Mad Hatter. Only registered when `gateway_endpoint` is configured. |
+| `run_opensearch_query` | Uses OpenSearch | Runs an OpenSearch Query DSL search on an index and returns the hits. Only registered when `opensearch_url` is configured. |
 
 `get_current_time` and `format_text` are pure utility functions independent of the chain logic.
 `analyze_text` shows the pattern of calling the chain from an MCP tool.
@@ -44,6 +45,16 @@ checkpoint-timeout fallback enabled, the client gets a `task_id` to poll with `g
 To enable it, set `gateway_endpoint` (the LiteLLM model group ID) in the chain config, as in `main.py`.
 This requires access to Stratio GenAI LiteLLM (e.g. through the GenAI development proxy). Without it the
 tool is not registered and the rest of the example works without any LLM.
+
+### Running OpenSearch queries (`run_opensearch_query`)
+
+Set `opensearch_url` in the chain config to enable it. The chain connects to OpenSearch as
+[example-chain-opensearch](../example-chain-opensearch) does (certificates from Vault, or from the
+`VAULT_LOCAL_*` environment variables locally) and fails to start if it cannot connect.
+
+- Locally, `main.py` reads the `OPENSEARCH_URL` environment variable, which points to the developer proxy
+  (e.g. `https://genai-developer-proxy-loadbalancer.<tenant>-genai.<domain>:8080/service/opensearch/`).
+- When deployed in GenAI API, use the internal URL (e.g. `https://opensearch-genai.stratio-genai:9200`).
 
 ## Local deployment
 
@@ -267,14 +278,15 @@ poetry build
 
 ```json
 {
-  "chain_id": "genai-example.mcp_actor",
+  "chain_id": "genai-example.mcp_tests",
   "chain_config": {
-    "package_id": "simple_mcp_chain-0.7.0a0",
+    "package_id": "simple_mcp_chain-0.7.0rc2",
     "chain_module": "simple_mcp_chain.chain",
     "chain_class": "SimpleMcpChain",
     "chain_params": {
       "llm_timeout": 30,
-      "gateway_endpoint": "gpt-5.4-mini"
+      "gateway_endpoint": "gpt-5.4-mini",
+      "opensearch_url": "https://opensearch-genai.stratio-genai:9200"
     }
   }
 }

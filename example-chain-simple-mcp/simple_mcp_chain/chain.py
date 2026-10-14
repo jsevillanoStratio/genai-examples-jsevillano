@@ -13,7 +13,9 @@ from typing import Optional
 
 from fastmcp import FastMCP
 from genai_core.chain.base import BaseGenAiChain, GenAiChainParams
+from genai_core.clients.vault.vault_client import VaultClient
 from genai_core.logger.logger import log
+from genai_core.services.opensearch.opensearch_service import OpenSearchService
 from langchain_core.runnables import Runnable, chain
 
 from .actors.mad_hatter_actor import MadHatterActor
@@ -29,17 +31,29 @@ from .mcp_tools import configure_mcp_tools
 # Optionally, when a gateway_endpoint is configured, the chain also builds a
 # Stratio actor (the Mad Hatter, taken from example-chain-basic-actor) and
 # exposes it as the mad_hatter MCP tool, showing how to use actors from MCP.
+# Likewise, when an opensearch_url is configured, the chain connects to
+# OpenSearch (as in example-chain-opensearch) and exposes the
+# run_opensearch_query MCP tool.
 class SimpleMcpChain(BaseGenAiChain):
     # Actor used by the mad_hatter MCP tool. None when no LLM is configured.
     mad_hatter_actor: Optional[MadHatterActor]
+    # Service used by the run_opensearch_query MCP tool. None when no OpenSearch is configured.
+    opensearch_service: Optional[OpenSearchService]
 
-    def __init__(self, gateway_endpoint: Optional[str] = None, llm_timeout: int = 30):
+    def __init__(
+        self,
+        gateway_endpoint: Optional[str] = None,
+        llm_timeout: int = 30,
+        opensearch_url: Optional[str] = None,
+    ):
         """
         Initializes the SimpleMcpChain.
 
         :param gateway_endpoint: The ID of the model group in Stratio GenAI LiteLLM pointing
             to the desired model. If not provided, the mad_hatter MCP tool is not registered.
         :param llm_timeout: Timeout for the LLM model, default is 30 seconds.
+        :param opensearch_url: The URL of the OpenSearch instance. If not provided, the
+            run_opensearch_query MCP tool is not registered.
         """
         log.info("Preparing Simple MCP Example chain")
         self.mad_hatter_actor = None
@@ -50,7 +64,48 @@ class SimpleMcpChain(BaseGenAiChain):
             )
         else:
             log.info("No gateway_endpoint configured: mad_hatter MCP tool disabled")
+        self.opensearch_service = None
+        if opensearch_url:
+            self.opensearch_service = self._init_opensearch(opensearch_url)
+        else:
+            log.info(
+                "No opensearch_url configured: run_opensearch_query MCP tool disabled"
+            )
         log.info("Simple MCP Example chain ready!")
+
+    @staticmethod
+    def _init_opensearch(opensearch_url: str) -> OpenSearchService:
+        """Initializes the OpenSearch client, as in example-chain-opensearch.
+
+        The certificates are obtained from Vault. For local development, the
+        VaultClient uses the VAULT_LOCAL_CLIENT_CERT, VAULT_LOCAL_CLIENT_KEY and
+        VAULT_LOCAL_CA_CERTS environment variables instead.
+
+        :param opensearch_url: The URL of the OpenSearch instance.
+        :return: The connected OpenSearch service.
+        """
+        try:
+            vault = VaultClient()
+            cert, key = vault.get_service_certificate_pem_paths()
+            ca = vault.get_ca_bundle_pem_path()
+            log.info(f"Trying to connect with OpenSearch {opensearch_url}...")
+            opensearch_service = OpenSearchService(
+                opensearch_url=opensearch_url,
+                ca_certs=ca,
+                client_cert=cert,
+                client_key=key,
+            )
+            connected, error_msg = opensearch_service.test_connection()
+            if not connected:
+                raise RuntimeError(
+                    f"Unable to test connection with {opensearch_url}: {error_msg}"
+                )
+            log.info("Connected with OpenSearch")
+        except Exception as error:
+            error_msg = f"Unable to init Simple MCP chain. Unable to connect with OpenSearch. Error: {error}"
+            log.error(error_msg)
+            raise RuntimeError(error_msg) from error
+        return opensearch_service
 
     def chain(self) -> Runnable:
         """Returns a Runnable that computes basic statistics for the input text.
@@ -87,7 +142,7 @@ class SimpleMcpChain(BaseGenAiChain):
             mcp_server_description=(
                 "Utility tools to get the current UTC time, format text and count "
                 "its words and characters, plus a Mad Hatter tool that answers "
-                "requests with a rhyming riddle."
+                "requests with a rhyming riddle and a tool to run OpenSearch queries."
             ),
         )
 

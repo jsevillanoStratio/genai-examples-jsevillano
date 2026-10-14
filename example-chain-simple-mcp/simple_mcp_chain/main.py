@@ -76,6 +76,8 @@ def main(chain_config):
     - analyze_text: word and character count, delegating to the chain.
     - mad_hatter: answers a request with a riddle using the Mad Hatter actor
       (only when "gateway_endpoint" is configured).
+    - run_opensearch_query: runs an OpenSearch search query on an index
+      (only when "opensearch_url" is configured).
     """
     app = GenAiServer(
         module_name="simple_mcp_chain.chain",
@@ -92,5 +94,11 @@ if __name__ == "__main__":
     chain_config = {
         "gateway_endpoint": "gpt-5.4-mini",
         "llm_timeout": 30,
+        # OpenSearch url reachable from your local machine (the developer proxy), e.g.
+        # https://genai-developer-proxy-loadbalancer.stratio-genai.k8s.bravo.labs.stratio.com:8080/service/opensearch/
+        # When deployed in GenAI API use the internal url instead:
+        # https://opensearch-genai.stratio-genai:9200
+        # Remove it (or leave OPENSEARCH_URL unset) to disable the run_opensearch_query MCP tool.
+        "opensearch_url": os.getenv("OPENSEARCH_URL"),
     }
     main(chain_config)

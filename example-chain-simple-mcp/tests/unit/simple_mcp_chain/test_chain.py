@@ -9,7 +9,7 @@ nor reverse engineered, disassembled or decompiled, without express
 written authorization from Stratio Big Data Inc., Sucursal en España.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from genai_core.test.mock_helper import mock_init_litellm_gateway
@@ -20,6 +20,7 @@ from simple_mcp_chain.mcp_tools import (
     FormatTextResponse,
     GetCurrentTimeResponse,
     MadHatterResponse,
+    RunOpenSearchQueryResponse,
     configure_mcp_tools,
 )
 
@@ -54,6 +55,39 @@ class TestSimpleMcpChain:
         mock_init_litellm_gateway(mocker)
         c = SimpleMcpChain(gateway_endpoint="test-endpoint")
         assert c.mad_hatter_actor is not None
+
+    def test_chain_without_opensearch_url_has_no_opensearch_service(self):
+        c = SimpleMcpChain()
+        assert c.opensearch_service is None
+
+    @patch("simple_mcp_chain.chain.OpenSearchService")
+    @patch("simple_mcp_chain.chain.VaultClient")
+    def test_chain_with_opensearch_url_connects(self, mock_vault, mock_service):
+        mock_vault.return_value.get_service_certificate_pem_paths.return_value = (
+            "cert",
+            "key",
+        )
+        mock_vault.return_value.get_ca_bundle_pem_path.return_value = "ca"
+        mock_service.return_value.test_connection.return_value = (True, "")
+        c = SimpleMcpChain(opensearch_url="https://opensearch:9200")
+        assert c.opensearch_service is mock_service.return_value
+        mock_service.assert_called_once_with(
+            opensearch_url="https://opensearch:9200",
+            ca_certs="ca",
+            client_cert="cert",
+            client_key="key",
+        )
+
+    @patch("simple_mcp_chain.chain.OpenSearchService")
+    @patch("simple_mcp_chain.chain.VaultClient")
+    def test_chain_with_unreachable_opensearch_raises(self, mock_vault, mock_service):
+        mock_vault.return_value.get_service_certificate_pem_paths.return_value = (
+            "cert",
+            "key",
+        )
+        mock_service.return_value.test_connection.return_value = (False, "refused")
+        with pytest.raises(RuntimeError, match="refused"):
+            SimpleMcpChain(opensearch_url="https://opensearch:9200")
 
     def test_mcp_server_returns_none_when_mcp_is_none(self):
         c = SimpleMcpChain()
@@ -95,6 +129,16 @@ class TestMcpToolLogic:
         assert response.task_id is None
         assert response.error is None
 
+    def test_run_opensearch_query_response_fields(self):
+        response = RunOpenSearchQueryResponse(
+            index="my-index", total_hits=1, hits=[{"_id": "1"}]
+        )
+        assert response.index == "my-index"
+        assert response.total_hits == 1
+        assert response.hits == [{"_id": "1"}]
+        assert response.aggregations is None
+        assert response.error is None
+
     def test_analyze_text_response_fields(self):
         response = AnalyzeTextResponse(text="hello world", word_count=2, char_count=11)
         assert response.text == "hello world"
@@ -106,13 +150,28 @@ class TestMcpToolLogic:
         mock_mcp = MagicMock()
         mock_chain = MagicMock()
         mock_chain.mad_hatter_actor = None
+        mock_chain.opensearch_service = None
         configure_mcp_tools(mock_mcp, mock_chain)
         assert mock_mcp.tool.call_count == 3
 
     def test_configure_mcp_tools_registers_mad_hatter_when_actor_exists(self):
         mock_mcp = MagicMock()
-        configure_mcp_tools(mock_mcp, MagicMock())
+        mock_chain = MagicMock()
+        mock_chain.opensearch_service = None
+        configure_mcp_tools(mock_mcp, mock_chain)
         assert mock_mcp.tool.call_count == 4
+
+    def test_configure_mcp_tools_registers_opensearch_when_service_exists(self):
+        mock_mcp = MagicMock()
+        mock_chain = MagicMock()
+        mock_chain.mad_hatter_actor = None
+        configure_mcp_tools(mock_mcp, mock_chain)
+        assert mock_mcp.tool.call_count == 4
+
+    def test_configure_mcp_tools_registers_all_tools(self):
+        mock_mcp = MagicMock()
+        configure_mcp_tools(mock_mcp, MagicMock())
+        assert mock_mcp.tool.call_count == 5
 
     def test_configure_mcp_tools_passes_readonly_annotations(self):
         mock_mcp = MagicMock()

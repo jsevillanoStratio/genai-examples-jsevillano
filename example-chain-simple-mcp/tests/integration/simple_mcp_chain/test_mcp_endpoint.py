@@ -62,6 +62,8 @@ class TestMcpEndpointTools:
             assert "format_text" in tool_names
             # No gateway_endpoint configured -> no actor -> no mad_hatter tool
             assert "mad_hatter" not in tool_names
+            # No opensearch_url configured -> no run_opensearch_query tool
+            assert "run_opensearch_query" not in tool_names
 
     @pytest.mark.asyncio
     async def test_get_current_time_returns_utc_time(self, mcp_server):
@@ -193,3 +195,73 @@ class TestMadHatterTool:
         async with Client(FastMCPTransport(mad_hatter_mcp_server)) as client:
             result = await client.call_tool("mad_hatter", {"user_request": "Hi!"})
             assert "LLM unavailable" in result.structured_content["error"]
+
+
+@pytest.fixture
+def opensearch_client(mocker) -> MagicMock:
+    """Mocked OpenSearch client so run_opensearch_query can be tested without OpenSearch."""
+    mock_vault = mocker.patch("simple_mcp_chain.chain.VaultClient")
+    mock_vault.return_value.get_service_certificate_pem_paths.return_value = (
+        "cert",
+        "key",
+    )
+    mock_service = mocker.patch("simple_mcp_chain.chain.OpenSearchService")
+    mock_service.return_value.test_connection.return_value = (True, "")
+    client = mock_service.return_value.client
+    client.search.return_value = {
+        "hits": {
+            "total": {"value": 1, "relation": "eq"},
+            "hits": [{"_id": "1", "_source": {"value": "Scott"}}],
+        },
+        "aggregations": {"by_table": {"buckets": []}},
+    }
+    return client
+
+
+@pytest.fixture
+def opensearch_mcp_server(opensearch_client) -> FastMCP:
+    """In-memory FastMCP server whose chain has an OpenSearch service (mocked client)."""
+    mcp = FastMCP("simple-mcp-chain-opensearch-test")
+    chain = SimpleMcpChain(opensearch_url="https://opensearch:9200")
+    chain.mcp_server(mcp)
+    return mcp
+
+
+class TestRunOpenSearchQueryTool:
+    @pytest.mark.asyncio
+    async def test_run_opensearch_query_tool_is_listed(self, opensearch_mcp_server):
+        async with Client(FastMCPTransport(opensearch_mcp_server)) as client:
+            tool_names = {t.name for t in await client.list_tools()}
+            assert "run_opensearch_query" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_run_opensearch_query_returns_hits(
+        self, opensearch_mcp_server, opensearch_client
+    ):
+        query = {"size": 1, "query": {"match": {"value": "Scott"}}}
+        async with Client(FastMCPTransport(opensearch_mcp_server)) as client:
+            result = await client.call_tool(
+                "run_opensearch_query", {"index": "My-Index", "query": query}
+            )
+            assert not result.is_error
+            assert result.structured_content["index"] == "my-index"
+            assert result.structured_content["total_hits"] == 1
+            assert result.structured_content["hits"][0]["_source"]["value"] == "Scott"
+            assert result.structured_content["aggregations"] == {
+                "by_table": {"buckets": []}
+            }
+
+        # The index is lowercased and the query is sent as the search body
+        opensearch_client.search.assert_called_once_with(index="my-index", body=query)
+
+    @pytest.mark.asyncio
+    async def test_run_opensearch_query_returns_error_when_search_fails(
+        self, opensearch_mcp_server, opensearch_client
+    ):
+        opensearch_client.search.side_effect = RuntimeError("index_not_found")
+        async with Client(FastMCPTransport(opensearch_mcp_server)) as client:
+            result = await client.call_tool(
+                "run_opensearch_query",
+                {"index": "missing", "query": {"query": {"match_all": {}}}},
+            )
+            assert "index_not_found" in result.structured_content["error"]

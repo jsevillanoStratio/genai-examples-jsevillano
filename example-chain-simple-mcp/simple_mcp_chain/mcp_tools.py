@@ -10,7 +10,7 @@ written authorization from Stratio Big Data Inc., Sucursal en España.
 """
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from fastmcp import FastMCP
 from genai_core.constants.constants import CHAIN_KEY_GENAI_AUTH, CHAIN_KEY_USER_REQUEST
@@ -66,13 +66,23 @@ class MadHatterResponse(McpCheckpointToolResponse):
     riddle_explanation: Optional[str] = None
 
 
+class RunOpenSearchQueryResponse(McpToolResponse):
+    """Response for the run_opensearch_query MCP tool."""
+
+    index: Optional[str] = None
+    total_hits: Optional[int] = None
+    hits: Optional[list[dict[str, Any]]] = None
+    aggregations: Optional[dict[str, Any]] = None
+
+
 def configure_mcp_tools(mcp: FastMCP, chain: "SimpleMcpChain") -> None:
     """Register all MCP tools on the given FastMCP instance.
 
     Args:
         mcp: The FastMCP server instance to register tools on.
         chain: The SimpleMcpChain instance used by analyze_text to delegate
-            to the chain's invoke logic, and by mad_hatter to reach its actor.
+            to the chain's invoke logic, by mad_hatter to reach its actor and by
+            run_opensearch_query to reach its OpenSearch service.
     """
 
     @mcp.tool(
@@ -149,6 +159,54 @@ def configure_mcp_tools(mcp: FastMCP, chain: "SimpleMcpChain") -> None:
             word_count=result["word_count"],
             char_count=result["char_count"],
         )
+
+    # The run_opensearch_query tool needs OpenSearch, so it is only registered when
+    # the chain was configured with an opensearch_url.
+    opensearch_service = chain.opensearch_service
+    if opensearch_service is not None:
+
+        @mcp.tool(
+            annotations={
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+            }
+        )
+        @mcp_tool_wrapper("run_opensearch_query", allowed_roles=MCP_READ_ROLES)
+        def run_opensearch_query(
+            metadata: GenAiMetadata,
+            index: str,
+            query: dict[str, Any],
+        ) -> RunOpenSearchQueryResponse:
+            """Runs an OpenSearch search query on the given index and returns the hits.
+
+            Args:
+                index: The OpenSearch index (or index pattern) to search.
+                query: The search request body in OpenSearch Query DSL, e.g.
+                    {"size": 5, "query": {"match": {"value": "Scott"}}}.
+            """
+            # Same index normalization (lowercase) as example-chain-opensearch
+            transformed_index = index.lower()
+            try:
+                result = opensearch_service.client.search(
+                    index=transformed_index, body=query
+                )
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                log.error(
+                    f"OpenSearch query on index '{transformed_index}' failed: {e}"
+                )
+                return RunOpenSearchQueryResponse(
+                    index=transformed_index, error=f"OpenSearch query failed: {e}"
+                )
+
+            hits = result.get("hits", {})
+            total = hits.get("total")
+            return RunOpenSearchQueryResponse(
+                index=transformed_index,
+                total_hits=total.get("value") if isinstance(total, dict) else total,
+                hits=hits.get("hits", []),
+                aggregations=result.get("aggregations"),
+            )
 
     # The mad_hatter tool needs an LLM, so it is only registered when the chain
     # was configured with a gateway_endpoint (and therefore built the actor).
