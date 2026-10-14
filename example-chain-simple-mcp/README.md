@@ -19,9 +19,31 @@ This example is the practical counterpart of the MCP server section in the [GenA
 | `get_current_time` | No | Returns the current UTC date and time in ISO 8601 format. |
 | `format_text` | No | Formats a string: `upper`, `lower`, `title`, or `reverse`. |
 | `analyze_text` | **Yes** | Returns word count and character count by delegating to `chain.chain().invoke()`. |
+| `mad_hatter` | Uses an actor | Answers a request with a rhyming riddle, as the Mad Hatter. Only registered when `gateway_endpoint` is configured. |
 
 `get_current_time` and `format_text` are pure utility functions independent of the chain logic.
 `analyze_text` shows the pattern of calling the chain from an MCP tool.
+`mad_hatter` shows the pattern of calling a Stratio actor (an LLM) from an MCP tool.
+
+### Using a Stratio actor from an MCP tool (`mad_hatter`)
+
+The `mad_hatter` tool reuses the `BasicExampleActor` from [example-chain-basic-actor](../example-chain-basic-actor),
+copied here as `MadHatterActor` in `simple_mcp_chain/actors/mad_hatter_actor.py`. It reproduces the three steps of
+that chain (`_extract_genai_auth | _extract_user_name | _invoke_actor`) inside the tool:
+
+1. MCP tools receive a `GenAiMetadata` (from the MCP request `_meta`) instead of a `RunnableConfig`.
+   `mcp_metadata_to_runnable_config(metadata)` converts it.
+2. `GenAiAuthRunnable().invoke({}, config)` builds the `GenAiAuth` of the nominal user.
+3. The auth is stored in `config["metadata"]["genai_auth"]`, so the actor calls Stratio GenAI LiteLLM
+   on behalf of the user instead of with the chain identity.
+4. The actor input (`user_request` + `username`) is built and `actor.get_chain().invoke(actor_input, config)` runs it.
+
+The response extends `McpCheckpointToolResponse` because LLM calls can be slow: when the server has the
+checkpoint-timeout fallback enabled, the client gets a `task_id` to poll with `get_mcp_task_result`.
+
+To enable it, set `gateway_endpoint` (the LiteLLM model group ID) in the chain config, as in `main.py`.
+This requires access to Stratio GenAI LiteLLM (e.g. through the GenAI development proxy). Without it the
+tool is not registered and the rest of the example works without any LLM.
 
 ## Local deployment
 
@@ -47,7 +69,7 @@ poetry lock
 poetry install
 ```
 
-4. Run the chain (no LiteLLM connection needed for this example):
+4. Run the chain (no LiteLLM connection needed unless `gateway_endpoint` is set, which enables `mad_hatter`):
 
 ```bash
 poetry run python simple_mcp_chain/main.py
@@ -186,6 +208,43 @@ Expected SSE response for `format_text`:
 event: message
 data: {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"{\"result\":\"Hello World\",\"style\":\"title\"}"}],"structuredContent":{"result":"Hello World","style":"title"},"isError":false}}
 ```
+
+##### Calling `mad_hatter` with curl
+
+`mad_hatter` is only listed by `tools/list` when the chain runs with `gateway_endpoint` set (see `main.py`).
+Unlike the utility tools, it calls Stratio GenAI LiteLLM on behalf of the user in `_meta.genai_state`,
+so it needs a **real** user and tenant, not placeholders. The `local-env` script (see the
+[main README](../README.md)) writes them to `.local_env/genai-env.sh`. Load that file in the shell where you run curl,
+then reuse the `SESSION_ID` from Step 1:
+
+```bash
+# Run from the example-chain-simple-mcp folder (or use the absolute path to the file)
+source .local_env/genai-env.sh
+
+# Step 6 — call mad_hatter (the user and tenant come from the env vars loaded above)
+curl -s -X POST http://127.0.0.1:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "mcp-session-id: $SESSION_ID" \
+  -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"mad_hatter","arguments":{"user_request":"Hi! Nice to meet you! Where is the Queen of Hearts?"},"_meta":{"genai_state":{"client_auth_type":"mtls","client_user_id":"'"$GENAI_METADATA_USER_ID"'","client_tenant":"'"$GENAI_METADATA_TENANT"'","client_role":"'"$GENAI_METADATA_ROLE"'"}}}}'
+```
+
+The `structuredContent` of the response contains `user_request_explanation`, `riddle` and `riddle_explanation`.
+
+LLM calls can be slow. If the tool exceeds the server's checkpoint timeout, the response contains a `task_id`
+instead of the riddle. Poll `get_mcp_task_result` until `status` is `done`, `error` or `not_found`:
+
+```bash
+# Step 7 — (only if Step 6 returned a task_id) poll for the result
+curl -s -X POST http://127.0.0.1:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "mcp-session-id: $SESSION_ID" \
+  -d '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"get_mcp_task_result","arguments":{"task_id":"<task_id>"},"_meta":{"genai_state":{"client_user_id":"'"$GENAI_METADATA_USER_ID"'","client_tenant":"'"$GENAI_METADATA_TENANT"'","client_role":"'"$GENAI_METADATA_ROLE"'"}}}}'
+```
+
+If the response is `{"error": "Mad Hatter actor failed: ..."}`, the call to LiteLLM failed: check the
+LiteLLM variables in `.local_env/genai-env.env`.
 
 > **Note**: the `_meta.genai_state.client_role` field is required by `mcp_tool_wrapper`
 > for role-based access control. Without it the tool returns

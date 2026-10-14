@@ -16,6 +16,7 @@ from genai_core.chain.base import BaseGenAiChain
 from genai_core.logger.logger import log
 from langchain_core.runnables import Runnable, chain
 
+from .actors.mad_hatter_actor import MadHatterActor
 from .mcp_tools import configure_mcp_tools
 
 
@@ -23,12 +24,32 @@ from .mcp_tools import configure_mcp_tools
 # The chain's main invoke endpoint accepts a text input and returns basic
 # statistics about it. In addition, the chain exposes two MCP tools
 # (get_current_time and format_text) that AI assistants can call directly.
-# Neither the invoke endpoint nor the MCP tools require an LLM, which shows
+# Neither the invoke endpoint nor those MCP tools require an LLM, which shows
 # that MCP tools can be pure utility functions independent of the chain logic.
+# Optionally, when a gateway_endpoint is configured, the chain also builds a
+# Stratio actor (the Mad Hatter, taken from example-chain-basic-actor) and
+# exposes it as the mad_hatter MCP tool, showing how to use actors from MCP.
 class SimpleMcpChain(BaseGenAiChain):
+    # Actor used by the mad_hatter MCP tool. None when no LLM is configured.
+    mad_hatter_actor: Optional[MadHatterActor]
 
-    def __init__(self):
+    def __init__(self, gateway_endpoint: Optional[str] = None, llm_timeout: int = 30):
+        """
+        Initializes the SimpleMcpChain.
+
+        :param gateway_endpoint: The ID of the model group in Stratio GenAI LiteLLM pointing
+            to the desired model. If not provided, the mad_hatter MCP tool is not registered.
+        :param llm_timeout: Timeout for the LLM model, default is 30 seconds.
+        """
         log.info("Preparing Simple MCP Example chain")
+        self.mad_hatter_actor = None
+        if gateway_endpoint:
+            self.mad_hatter_actor = MadHatterActor(
+                gateway_endpoint=gateway_endpoint,
+                timeout=llm_timeout,
+            )
+        else:
+            log.info("No gateway_endpoint configured: mad_hatter MCP tool disabled")
         log.info("Simple MCP Example chain ready!")
 
     def chain(self) -> Runnable:

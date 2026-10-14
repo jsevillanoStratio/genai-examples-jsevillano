@@ -9,14 +9,17 @@ nor reverse engineered, disassembled or decompiled, without express
 written authorization from Stratio Big Data Inc., Sucursal en España.
 """
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
+from genai_core.test.mock_helper import mock_init_litellm_gateway
 
 from simple_mcp_chain.chain import SimpleMcpChain
 from simple_mcp_chain.mcp_tools import (
     AnalyzeTextResponse,
     FormatTextResponse,
     GetCurrentTimeResponse,
+    MadHatterResponse,
     configure_mcp_tools,
 )
 
@@ -43,6 +46,15 @@ class TestSimpleMcpChain:
         assert result["word_count"] == 0
         assert result["char_count"] == 0
 
+    def test_chain_without_gateway_endpoint_has_no_actor(self):
+        c = SimpleMcpChain()
+        assert c.mad_hatter_actor is None
+
+    def test_chain_with_gateway_endpoint_builds_actor(self, mocker):
+        mock_init_litellm_gateway(mocker)
+        c = SimpleMcpChain(gateway_endpoint="test-endpoint")
+        assert c.mad_hatter_actor is not None
+
     def test_mcp_server_returns_none_when_mcp_is_none(self):
         c = SimpleMcpChain()
         assert c.mcp_server(None) is None
@@ -60,7 +72,9 @@ class TestMcpToolLogic:
     """Tests for the underlying tool logic, bypassing the async wrapper."""
 
     def test_get_current_time_response_fields(self):
-        response = GetCurrentTimeResponse(time="2025-01-01T00:00:00+00:00", timezone="UTC")
+        response = GetCurrentTimeResponse(
+            time="2025-01-01T00:00:00+00:00", timezone="UTC"
+        )
         assert response.time == "2025-01-01T00:00:00+00:00"
         assert response.timezone == "UTC"
         assert response.error is None
@@ -69,6 +83,16 @@ class TestMcpToolLogic:
         response = FormatTextResponse(result="HELLO", style="upper")
         assert response.result == "HELLO"
         assert response.style == "upper"
+        assert response.error is None
+
+    def test_mad_hatter_response_fields(self):
+        response = MadHatterResponse(
+            user_request_explanation="explanation",
+            riddle="riddle",
+            riddle_explanation="msg",
+        )
+        assert response.riddle == "riddle"
+        assert response.task_id is None
         assert response.error is None
 
     def test_analyze_text_response_fields(self):
@@ -81,8 +105,14 @@ class TestMcpToolLogic:
     def test_configure_mcp_tools_registers_three_tools(self):
         mock_mcp = MagicMock()
         mock_chain = MagicMock()
+        mock_chain.mad_hatter_actor = None
         configure_mcp_tools(mock_mcp, mock_chain)
         assert mock_mcp.tool.call_count == 3
+
+    def test_configure_mcp_tools_registers_mad_hatter_when_actor_exists(self):
+        mock_mcp = MagicMock()
+        configure_mcp_tools(mock_mcp, MagicMock())
+        assert mock_mcp.tool.call_count == 4
 
     def test_configure_mcp_tools_passes_readonly_annotations(self):
         mock_mcp = MagicMock()

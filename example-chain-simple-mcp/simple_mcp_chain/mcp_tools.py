@@ -13,10 +13,17 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal, Optional
 
 from fastmcp import FastMCP
-from genai_core.model.mcp_models import McpToolResponse
-from genai_core.runnables.genai_auth import MCP_READ_ROLES
-from genai_core.runnables.genai_metadata import GenAiMetadata
+from genai_core.constants.constants import CHAIN_KEY_GENAI_AUTH, CHAIN_KEY_USER_REQUEST
+from genai_core.logger.logger import log
+from genai_core.model.mcp_models import McpCheckpointToolResponse, McpToolResponse
+from genai_core.runnables.genai_auth import MCP_READ_ROLES, GenAiAuthRunnable
+from genai_core.runnables.genai_metadata import (
+    GenAiMetadata,
+    mcp_metadata_to_runnable_config,
+)
 from genai_core.runnables.mcp_tool_wrapper import mcp_tool_wrapper
+
+from .constants.constants import CHAIN_KEY_USER_NAME
 
 if TYPE_CHECKING:
     from .chain import SimpleMcpChain
@@ -44,13 +51,28 @@ class AnalyzeTextResponse(McpToolResponse):
     char_count: Optional[int] = None
 
 
+class MadHatterResponse(McpCheckpointToolResponse):
+    """Response for the mad_hatter MCP tool.
+
+    Extends McpCheckpointToolResponse (instead of McpToolResponse) because the
+    tool calls an LLM and can be slow: if the server has the checkpoint-timeout
+    fallback enabled, a task_id is returned and the client polls for the result.
+    Note that the base class already defines a ``message`` field (progress
+    message), so the actor's explanation is exposed as ``riddle_explanation``.
+    """
+
+    user_request_explanation: Optional[str] = None
+    riddle: Optional[str] = None
+    riddle_explanation: Optional[str] = None
+
+
 def configure_mcp_tools(mcp: FastMCP, chain: "SimpleMcpChain") -> None:
     """Register all MCP tools on the given FastMCP instance.
 
     Args:
         mcp: The FastMCP server instance to register tools on.
         chain: The SimpleMcpChain instance used by analyze_text to delegate
-            to the chain's invoke logic.
+            to the chain's invoke logic, and by mad_hatter to reach its actor.
     """
 
     @mcp.tool(
@@ -126,4 +148,59 @@ def configure_mcp_tools(mcp: FastMCP, chain: "SimpleMcpChain") -> None:
             text=result["text"],
             word_count=result["word_count"],
             char_count=result["char_count"],
+        )
+
+    # The mad_hatter tool needs an LLM, so it is only registered when the chain
+    # was configured with a gateway_endpoint (and therefore built the actor).
+    mad_hatter_actor = chain.mad_hatter_actor
+    if mad_hatter_actor is None:
+        return
+
+    @mcp.tool(
+        annotations={
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": False,
+        }
+    )
+    @mcp_tool_wrapper("mad_hatter", allowed_roles=MCP_READ_ROLES)
+    def mad_hatter(
+        metadata: GenAiMetadata,
+        user_request: str,
+    ) -> MadHatterResponse:
+        """Answers the user's request as the Mad Hatter from Alice in Wonderland,
+        with a rhyming riddle. Use it when the user asks for a mad hatter style answer.
+
+        Args:
+            user_request: The user's request or question to be answered as a riddle.
+        """
+        # 1. MCP tools receive GenAiMetadata (from the MCP request _meta) instead of
+        #    a RunnableConfig. Convert it so it can be passed to Langchain runnables.
+        config = mcp_metadata_to_runnable_config(metadata)
+
+        # 2. Same as _extract_genai_auth in example-chain-basic-actor: build the
+        #    GenAiAuth of the nominal user from the metadata.
+        auth = GenAiAuthRunnable().invoke({}, config)
+
+        # 3. Actors read genai_auth from the config metadata to call Stratio GenAI
+        #    LiteLLM on behalf of the user (instead of with the chain identity).
+        config["metadata"][CHAIN_KEY_GENAI_AUTH] = auth
+
+        # 4. Same as _extract_user_name: the actor replies backwards to Alice.
+        actor_input = {
+            CHAIN_KEY_USER_REQUEST: user_request,
+            CHAIN_KEY_USER_NAME: auth.user_id_impersonated or auth.user_id,
+        }
+
+        # 5. Same as _invoke_actor: run the actor chain.
+        try:
+            output = mad_hatter_actor.get_chain().invoke(actor_input, config)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            log.error(f"mad_hatter actor invocation failed: {e}")
+            return MadHatterResponse(error=f"Mad Hatter actor failed: {e}")
+
+        return MadHatterResponse(
+            user_request_explanation=output.user_request_explanation,
+            riddle=output.mad_hutter_riddle,
+            riddle_explanation=output.message,
         )

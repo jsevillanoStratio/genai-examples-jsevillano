@@ -24,3 +24,4 @@ __pycache__/
 
 # local environment variables
 .local_env/
+example-chain-basic-actor/graphify-out/*

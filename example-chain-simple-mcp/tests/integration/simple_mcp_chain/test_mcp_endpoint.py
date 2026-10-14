@@ -9,11 +9,18 @@ nor reverse engineered, disassembled or decompiled, without express
 written authorization from Stratio Big Data Inc., Sucursal en España.
 """
 
+from unittest.mock import MagicMock
+
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports import FastMCPTransport
+from genai_core.constants.constants import CHAIN_KEY_GENAI_AUTH, CHAIN_KEY_USER_REQUEST
+from genai_core.runnables.genai_auth import GenAiAuth
+from genai_core.test.mock_helper import mock_init_litellm_gateway
 
+from simple_mcp_chain.actors.mad_hatter_actor import MadHatterActorOutput
 from simple_mcp_chain.chain import SimpleMcpChain
+from simple_mcp_chain.constants.constants import CHAIN_KEY_USER_NAME
 
 
 @pytest.fixture
@@ -53,6 +60,8 @@ class TestMcpEndpointTools:
             tool_names = {t.name for t in tools}
             assert "get_current_time" in tool_names
             assert "format_text" in tool_names
+            # No gateway_endpoint configured -> no actor -> no mad_hatter tool
+            assert "mad_hatter" not in tool_names
 
     @pytest.mark.asyncio
     async def test_get_current_time_returns_utc_time(self, mcp_server):
@@ -118,3 +127,69 @@ class TestMcpEndpointTools:
             result = await client.call_tool("analyze_text", {"text": ""})
             assert result.structured_content["word_count"] == 0
             assert result.structured_content["char_count"] == 0
+
+
+@pytest.fixture
+def mad_hatter_actor_chain() -> MagicMock:
+    """Mocked actor chain so the mad_hatter tool can be tested without an LLM."""
+    actor_chain = MagicMock()
+    actor_chain.invoke.return_value = MadHatterActorOutput(
+        user_request_explanation="The user asks where the Queen is.",
+        mad_hutter_riddle="Where hearts are red and roses too...",
+        message="The riddle points to the Queen's garden.",
+    )
+    return actor_chain
+
+
+@pytest.fixture
+def mad_hatter_mcp_server(mocker, mad_hatter_actor_chain) -> FastMCP:
+    """In-memory FastMCP server whose chain has the Mad Hatter actor (mocked LLM)."""
+    mock_init_litellm_gateway(mocker)
+    mcp = FastMCP("simple-mcp-chain-mad-hatter-test")
+    chain = SimpleMcpChain(gateway_endpoint="test-endpoint")
+    chain.mad_hatter_actor.get_chain = MagicMock(return_value=mad_hatter_actor_chain)
+    chain.mcp_server(mcp)
+    return mcp
+
+
+class TestMadHatterTool:
+    @pytest.mark.asyncio
+    async def test_mad_hatter_tool_is_listed(self, mad_hatter_mcp_server):
+        async with Client(FastMCPTransport(mad_hatter_mcp_server)) as client:
+            tool_names = {t.name for t in await client.list_tools()}
+            assert "mad_hatter" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_mad_hatter_returns_actor_output(
+        self, mad_hatter_mcp_server, mad_hatter_actor_chain
+    ):
+        async with Client(FastMCPTransport(mad_hatter_mcp_server)) as client:
+            result = await client.call_tool(
+                "mad_hatter", {"user_request": "Where is the Queen of Hearts?"}
+            )
+            assert not result.is_error
+            assert (
+                result.structured_content["riddle"]
+                == "Where hearts are red and roses too..."
+            )
+            assert result.structured_content["riddle_explanation"] == (
+                "The riddle points to the Queen's garden."
+            )
+
+        actor_input, config = mad_hatter_actor_chain.invoke.call_args.args
+        assert actor_input[CHAIN_KEY_USER_REQUEST] == "Where is the Queen of Hearts?"
+        # The user name comes from the MCP metadata (env vars in local/test runs)
+        assert actor_input[CHAIN_KEY_USER_NAME] == "test-user"
+        # genai_auth is propagated so the actor calls LiteLLM on behalf of the user
+        auth = config["metadata"][CHAIN_KEY_GENAI_AUTH]
+        assert isinstance(auth, GenAiAuth)
+        assert auth.user_id == "test-user"
+
+    @pytest.mark.asyncio
+    async def test_mad_hatter_returns_error_when_actor_fails(
+        self, mad_hatter_mcp_server, mad_hatter_actor_chain
+    ):
+        mad_hatter_actor_chain.invoke.side_effect = RuntimeError("LLM unavailable")
+        async with Client(FastMCPTransport(mad_hatter_mcp_server)) as client:
+            result = await client.call_tool("mad_hatter", {"user_request": "Hi!"})
+            assert "LLM unavailable" in result.structured_content["error"]
