@@ -267,12 +267,15 @@ poetry build
 
 ```json
 {
-  "chain_id": "simple_mcp_chain",
+  "chain_id": "genai-example.mcp_actor",
   "chain_config": {
     "package_id": "simple_mcp_chain-0.7.0a0",
     "chain_module": "simple_mcp_chain.chain",
     "chain_class": "SimpleMcpChain",
-    "chain_params": {}
+    "chain_params": {
+      "llm_timeout": 30,
+      "gateway_endpoint": "gpt-5.4-mini"
+    }
   }
 }
 ```
