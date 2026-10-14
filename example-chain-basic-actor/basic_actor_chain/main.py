@@ -11,6 +11,37 @@ written authorization from Stratio Big Data Inc., Sucursal en España.
 
 from genai_core.server.server import GenAiServer
 
+import os
+from dotenv import load_dotenv
+load_dotenv(".local_env/genai-env.env", override=True)
+
+
+def patch_litellm_keos_routes():
+    """
+    LOCAL DEVELOPMENT WORKAROUND - do not commit.
+
+    The GenAI Developer Proxy 0.6.x does not expose genai-litellm, so we call LiteLLM directly through
+    its ingress with an API key. The Stratio '/keos/*' routes reject API keys (they require the mTLS identity),
+    so they are redirected to the standard LiteLLM routes, which return the same data shape.
+    Remove it once the Developer Proxy is upgraded to 0.7.x with genai-litellm enabled.
+    """
+    from genai_core.clients.gateway.litellm_gateway_client import LitellmGatewayClient
+
+    keos_to_standard_routes = {
+        "/keos/models": "/v1/model/info",
+        "/keos/models/groups": "/model_group/info",
+    }
+    original_request_keos = LitellmGatewayClient._request_keos
+
+    def _request_keos(self, url, params):
+        return original_request_keos(self, keos_to_standard_routes.get(url, url), params)
+
+    LitellmGatewayClient._request_keos = _request_keos
+
+
+if os.environ.get("GENAI_LITELLM_API_KEY") and os.environ.get("PATCH_LITELLM_KEOS_ROUTES", "false").lower() == "true":
+    patch_litellm_keos_routes()
+    #pass
 
 def main(chain_config):
     """
@@ -53,7 +84,7 @@ if __name__ == "__main__":
     # gateway_endpoint: The ID of the model group in Stratio GenAI LiteLLM pointing to the desired model.
     chain_config = {
         # Change the endpoint according to the model you will use
-        "gateway_endpoint": "openai-gpt-5.4-mini",
+        "gateway_endpoint": "gpt-5.4-mini",
         "llm_timeout": 30,
     }
     main(chain_config)

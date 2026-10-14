@@ -1,0 +1,15 @@
+
+
+```bash
+$ poetry config virtualenvs.in-project true
+$ poetry config certificates.stratio-releases.cert /home/jsevillano/Documents/02_Credentials/certificados_stratio/credenciales_bravo_jsevillano/ca-cert.crt
+$ poetry lock
+$ poetry install
+```
+
+
+```bash
+poetry run local-env --certs_path /home/jsevillano/Documents/02_Credentials/certificados_stratio/credenciales_bravo_jsevillano --developer_proxy_url https://genai.stratio.k8s.bravo.labs.stratio.com/genai-developer-proxy
+```
+
+
