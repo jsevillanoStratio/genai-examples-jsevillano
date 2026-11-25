@@ -31,6 +31,8 @@ from .constants.constants import (
     ADD_RECORDS_MAX_RECORDS,
     CHAIN_KEY_USER_NAME,
     VECTOR_SEARCH_MAX_K,
+    VIRTUALIZER_QUERY_DEFAULT_LIMIT,
+    VIRTUALIZER_QUERY_MAX_LIMIT,
 )
 from .vector_index import (
     build_bulk_body,
@@ -135,6 +137,15 @@ class VectorSearchResponse(McpToolResponse):
     index: Optional[str] = None
     vector_field: Optional[str] = None
     chunks: Optional[list[dict[str, Any]]] = None
+
+
+class RunVirtualizerQueryResponse(McpToolResponse):
+    """Response for the run_virtualizer_query MCP tool."""
+
+    query: Optional[str] = None
+    columns: Optional[list[dict[str, Any]]] = None
+    rows: Optional[list[dict[str, Any]]] = None
+    row_count: Optional[int] = None
 
 
 def configure_mcp_tools(mcp: FastMCP, chain: "SimpleMcpChain") -> None:
@@ -581,6 +592,61 @@ def configure_mcp_tools(mcp: FastMCP, chain: "SimpleMcpChain") -> None:
                 chunks=hits_to_chunks(
                     result.get("hits", {}).get("hits", []), text_field
                 ),
+            )
+
+    # The run_virtualizer_query tool needs Virtualizer, so it is only registered when
+    # the chain was configured with virtualizer_host and virtualizer_port.
+    virtualizer_service = chain.virtualizer_service
+    if virtualizer_service is not None:
+
+        @mcp.tool(
+            annotations={
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+            }
+        )
+        @mcp_tool_wrapper("run_virtualizer_query", allowed_roles=MCP_READ_ROLES)
+        def run_virtualizer_query(
+            metadata: GenAiMetadata,
+            query: str,
+            limit: int = VIRTUALIZER_QUERY_DEFAULT_LIMIT,
+        ) -> RunVirtualizerQueryResponse:
+            """Runs a Spark SQL query on Stratio Virtualizer and returns the resulting
+            rows. The query runs as the user calling the tool, so it only sees the data
+            that user is allowed to see. Quote database and table names with backticks,
+            e.g. SELECT * FROM `my_database`.`my_table` WHERE x > 1
+
+            Args:
+                query: The SQL query to run.
+                limit: Maximum number of rows to return (1-1000). Applied as a LIMIT to
+                    SELECT queries (a lower LIMIT in the query itself is kept).
+            """
+            if not 1 <= limit <= VIRTUALIZER_QUERY_MAX_LIMIT:
+                return RunVirtualizerQueryResponse(
+                    query=query,
+                    error=f"limit must be between 1 and {VIRTUALIZER_QUERY_MAX_LIMIT}",
+                )
+            # As in example-chain-virtualizer: always impersonate the nominal user
+            auth = GenAiAuthRunnable().invoke(
+                {}, mcp_metadata_to_runnable_config(metadata)
+            )
+            user = auth.user_id_impersonated or auth.user_id
+            result = virtualizer_service.data_query(
+                query, impersonated_user=user, limit=limit
+            )
+            if not result.successful:
+                error = result.original_exception_msg or result.exception
+                log.error(f"Virtualizer query failed: {error}")
+                return RunVirtualizerQueryResponse(
+                    query=query, error=f"Virtualizer query failed: {error}"
+                )
+            return RunVirtualizerQueryResponse(
+                query=query,
+                columns=result.data_schema,
+                # Rows are pydantic models: dump them as JSON-safe dicts
+                rows=[row.model_dump(mode="json") for row in result.data],
+                row_count=len(result.data),
             )
 
     # The mad_hatter tool needs an LLM, so it is only registered when the chain

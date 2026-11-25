@@ -40,8 +40,8 @@ def patch_litellm_keos_routes():
 
 
 if os.environ.get("GENAI_LITELLM_API_KEY") and os.environ.get("PATCH_LITELLM_KEOS_ROUTES", "false").lower() == "true":
-    patch_litellm_keos_routes()
-    #pass
+    #patch_litellm_keos_routes()
+    pass
 
 def main(chain_config):
     """

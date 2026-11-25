@@ -26,6 +26,7 @@ This example is the practical counterpart of the MCP server section in the [GenA
 | `describe_vector_index` | Uses OpenSearch | Lists the `knn_vector` fields of an index (dimension, space type, engine) and the type of the other fields. Only registered when `opensearch_url` is configured. |
 | `add_records` | Uses OpenSearch + embedding model | Indexes records, replacing `{"$embed": "<field>"}` pointers with the embedding of that field. Write roles only. Only registered when both `opensearch_url` and `embeddings_endpoint` are configured. |
 | `vector_search` | Uses OpenSearch + embedding model | Embeds a question and returns the `k` most similar chunks of an index (RAG retrieval). Only registered when both are configured. |
+| `run_virtualizer_query` | Uses Virtualizer | Runs a SQL query on Stratio Virtualizer as the calling user and returns the columns and rows (at most `limit`, 100 by default, 1000 max). Only registered when `virtualizer_host` and `virtualizer_port` are configured. |
 
 `get_current_time` and `format_text` are pure utility functions independent of the chain logic.
 `analyze_text` shows the pattern of calling the chain from an MCP tool.
@@ -118,6 +119,20 @@ Notes:
 - OpenSearch is accessed with the chain's identity, not the user's: any user allowed to call the tools can
   read every index the chain can read. `create_index` and `add_records` require a write role
   (`MCP_WRITE_ROLES`).
+
+### Running Virtualizer queries (`run_virtualizer_query`)
+
+Set `virtualizer_host` and `virtualizer_port` in the chain config to enable it. The chain connects to
+Virtualizer as [example-chain-virtualizer](../example-chain-virtualizer) does: with its own identity
+(`GENAI_API_SERVICE_NAME` and the certificates from Vault), checking the connection with `SELECT 1`.
+
+- Each query runs impersonating the nominal user (`EXECUTE AS <user>`), so the agent only sees the data
+  that user is allowed to see.
+- `limit` (default 100, max 1000) is added as a `LIMIT` to `SELECT`/`WITH` queries; a lower `LIMIT` in the
+  query is kept.
+- Locally, `main.py` reads `VIRTUALIZER_HOST` and `VIRTUALIZER_PORT` (the developer proxy). Going through the
+  proxy also needs `VIRTUALIZER_BASE_PATH=/service/virtualizer`.
+- Example: ``select * from `DS_mlops`.`cancer_classification` limit 100``.
 
 ## Local deployment
 
@@ -350,7 +365,9 @@ poetry build
       "llm_timeout": 30,
       "gateway_endpoint": "gpt-5.4-mini",
       "opensearch_url": "https://opensearch-genai.stratio-genai:9200",
-      "embeddings_endpoint": "text-embedding-3-large"
+      "embeddings_endpoint": "text-embedding-3-large",
+      "virtualizer_host": "<virtualizer-internal-host>",
+      "virtualizer_port": 13422
     }
   }
 }

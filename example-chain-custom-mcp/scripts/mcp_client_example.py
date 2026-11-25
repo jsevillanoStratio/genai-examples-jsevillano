@@ -26,11 +26,18 @@ vector_search) need both "opensearch_url" and "embeddings_endpoint".
 """
 
 import asyncio
+import os
 
+from dotenv import load_dotenv
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
 MCP_URL = "http://127.0.0.1:8080/mcp"
+
+# Same env file as main.py. Locally the chain connects to Virtualizer with your personal
+# certificate, which can only run queries as yourself (EXECUTE AS <you>), so the user in
+# the metadata must be the owner of VAULT_LOCAL_CLIENT_CERT (GENAI_METADATA_USER_ID).
+load_dotenv(".local_env/genai-env.env")
 
 # Auth metadata passed as MCP request _meta.
 # Locally the server falls back to env vars if this is omitted, but the
@@ -38,7 +45,7 @@ MCP_URL = "http://127.0.0.1:8080/mcp"
 AUTH_META = {
     "genai_state": {
         "client_auth_type": "mtls",
-        "client_user_id": "local-dev-user",
+        "client_user_id": os.getenv("GENAI_METADATA_USER_ID", "local-dev-user"),
         "client_tenant": "local-tenant",
         "client_role": "consumer",
     }
@@ -98,6 +105,9 @@ RAG_RECORDS = [
     )
 ]
 RAG_QUESTION = "Who gives a tea party?"
+
+# Query used by run_virtualizer_query. Adapt it to a table you can read.
+VIRTUALIZER_QUERY = "select * from `DS_mlops`.`cancer_classification`"
 
 
 async def main() -> None:
@@ -290,6 +300,27 @@ async def main() -> None:
                 "Skipping RAG tools (chain running without opensearch_url "
                 "and embeddings_endpoint)"
             )
+        print()
+
+        # ------------------------------------------------------------------
+        # Call run_virtualizer_query — runs SQL on Virtualizer as the user.
+        # Only registered when the chain runs with "virtualizer_host"/"virtualizer_port".
+        # ------------------------------------------------------------------
+        if "run_virtualizer_query" in tool_names:
+            print(f"Calling run_virtualizer_query(query={VIRTUALIZER_QUERY!r}, limit=5) ...")
+            result = await client.call_tool(
+                "run_virtualizer_query",
+                {"query": VIRTUALIZER_QUERY, "limit": 5},
+                meta=AUTH_META,
+            )
+            if result.is_error or result.structured_content.get("error"):
+                print(f"  ERROR: {result.structured_content}")
+            else:
+                print(f"  row_count: {result.structured_content['row_count']}")
+                for row in result.structured_content["rows"]:
+                    print(f"  - {row}")
+        else:
+            print("Skipping run_virtualizer_query (chain running without virtualizer_host)")
         print()
 
         print("Done.")

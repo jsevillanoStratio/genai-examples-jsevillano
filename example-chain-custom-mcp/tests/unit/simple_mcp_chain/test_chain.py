@@ -24,6 +24,7 @@ from custom_mcp_chain.mcp_tools import (
     GetCurrentTimeResponse,
     MadHatterResponse,
     RunOpenSearchQueryResponse,
+    RunVirtualizerQueryResponse,
     VectorSearchResponse,
     configure_mcp_tools,
 )
@@ -102,6 +103,48 @@ class TestSimpleMcpChain:
         mock_service.return_value.test_connection.return_value = (False, "refused")
         with pytest.raises(RuntimeError, match="refused"):
             SimpleMcpChain(opensearch_url="https://opensearch:9200")
+
+    def test_chain_without_virtualizer_has_no_virtualizer_service(self):
+        c = SimpleMcpChain()
+        assert c.virtualizer_service is None
+
+    @patch.dict("os.environ", {"GENAI_API_SERVICE_NAME": "genai-api.test"})
+    @patch("custom_mcp_chain.chain.VirtualizerServiceHelper")
+    @patch("custom_mcp_chain.chain.VaultClient")
+    def test_chain_with_virtualizer_connects(self, mock_vault, mock_helper):
+        mock_vault.return_value.get_service_certificate_pem_paths.return_value = (
+            "cert",
+            "key",
+        )
+        mock_vault.return_value.get_ca_bundle_pem_path.return_value = "ca"
+        service = mock_helper.get_service.return_value
+        service.data_query.return_value.successful = True
+        c = SimpleMcpChain(virtualizer_host="virtualizer", virtualizer_port="8080")
+        assert c.virtualizer_service is service
+        mock_helper.init_service.assert_called_once_with(
+            host="virtualizer",
+            port=8080,
+            username="genai-api.test",
+            ca_certs="ca",
+            client_cert="cert",
+            client_key="key",
+            max_attempts=3,
+            request_timeout=60,
+        )
+
+    @patch.dict("os.environ", {"GENAI_API_SERVICE_NAME": "genai-api.test"})
+    @patch("custom_mcp_chain.chain.VirtualizerServiceHelper")
+    @patch("custom_mcp_chain.chain.VaultClient")
+    def test_chain_with_unreachable_virtualizer_raises(self, mock_vault, mock_helper):
+        mock_vault.return_value.get_service_certificate_pem_paths.return_value = (
+            "cert",
+            "key",
+        )
+        test_query = mock_helper.get_service.return_value.data_query.return_value
+        test_query.successful = False
+        test_query.original_exception_msg = "refused"
+        with pytest.raises(RuntimeError, match="refused"):
+            SimpleMcpChain(virtualizer_host="virtualizer", virtualizer_port=8080)
 
     def test_chain_without_embeddings_endpoint_has_no_embeddings(self):
         c = SimpleMcpChain()
@@ -187,6 +230,7 @@ class TestMcpToolLogic:
         mock_chain.mad_hatter_actor = None
         mock_chain.opensearch_service = None
         mock_chain.embeddings = None
+        mock_chain.virtualizer_service = None
         configure_mcp_tools(mock_mcp, mock_chain)
         assert mock_mcp.tool.call_count == 3
 
@@ -195,6 +239,7 @@ class TestMcpToolLogic:
         mock_chain = MagicMock()
         mock_chain.opensearch_service = None
         mock_chain.embeddings = None
+        mock_chain.virtualizer_service = None
         configure_mcp_tools(mock_mcp, mock_chain)
         assert mock_mcp.tool.call_count == 4
 
@@ -203,6 +248,7 @@ class TestMcpToolLogic:
         mock_chain = MagicMock()
         mock_chain.mad_hatter_actor = None
         mock_chain.embeddings = None
+        mock_chain.virtualizer_service = None
         configure_mcp_tools(mock_mcp, mock_chain)
         # run_opensearch_query, create_index and describe_vector_index
         assert mock_mcp.tool.call_count == 6
@@ -212,13 +258,34 @@ class TestMcpToolLogic:
         mock_chain = MagicMock()
         mock_chain.mad_hatter_actor = None
         mock_chain.opensearch_service = None
+        mock_chain.virtualizer_service = None
         configure_mcp_tools(mock_mcp, mock_chain)
         assert mock_mcp.tool.call_count == 4
 
     def test_configure_mcp_tools_registers_all_tools(self):
         mock_mcp = MagicMock()
         configure_mcp_tools(mock_mcp, MagicMock())
-        assert mock_mcp.tool.call_count == 10
+        assert mock_mcp.tool.call_count == 11
+
+    def test_configure_mcp_tools_registers_virtualizer_when_service_exists(self):
+        mock_mcp = MagicMock()
+        mock_chain = MagicMock()
+        mock_chain.mad_hatter_actor = None
+        mock_chain.opensearch_service = None
+        mock_chain.embeddings = None
+        configure_mcp_tools(mock_mcp, mock_chain)
+        assert mock_mcp.tool.call_count == 4
+
+    def test_run_virtualizer_query_response_fields(self):
+        response = RunVirtualizerQueryResponse(
+            query="SELECT 1 AS id",
+            columns=[{"name": "id", "type": "integer"}],
+            rows=[{"id": 1}],
+            row_count=1,
+        )
+        assert response.rows == [{"id": 1}]
+        assert response.row_count == 1
+        assert response.error is None
 
     def test_configure_mcp_tools_passes_annotations(self):
         mock_mcp = MagicMock()

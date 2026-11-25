@@ -9,13 +9,19 @@ nor reverse engineered, disassembled or decompiled, without express
 written authorization from Stratio Big Data Inc., Sucursal en España.
 """
 
+import os
 from typing import Optional
 
 from fastmcp import FastMCP
 from genai_core.chain.base import BaseGenAiChain, GenAiChainParams
 from genai_core.clients.vault.vault_client import VaultClient
+from genai_core.constants.constants import ENV_VAR_GENAI_API_SERVICE_NAME
 from genai_core.logger.logger import log
 from genai_core.services.opensearch.opensearch_service import OpenSearchService
+from genai_core.services.virtualizer.virtualizer_service_helper import (
+    VirtualizerService,
+    VirtualizerServiceHelper,
+)
 from langchain_core.runnables import Runnable, chain
 
 from .actors.mad_hatter_actor import MadHatterActor
@@ -38,7 +44,9 @@ from .mcp_tools import configure_mcp_tools
 # an embeddings_endpoint is configured, it exposes the generate_embeddings MCP tool
 # using that LiteLLM embedding model. With both, it also exposes add_records and
 # vector_search, which compute the vectors on the server for RAG over any index
-# with knn_vector fields.
+# with knn_vector fields. Finally, when virtualizer_host and virtualizer_port are
+# configured, the chain connects to Stratio Virtualizer (as in
+# example-chain-virtualizer) and exposes the run_virtualizer_query MCP tool.
 class SimpleMcpChain(BaseGenAiChain):
     # Actor used by the mad_hatter MCP tool. None when no LLM is configured.
     mad_hatter_actor: Optional[MadHatterActor]
@@ -46,13 +54,19 @@ class SimpleMcpChain(BaseGenAiChain):
     opensearch_service: Optional[OpenSearchService]
     # Embeddings model used by the generate_embeddings MCP tool. None when not configured.
     embeddings: Optional[StratioLitellmGatewayEmbeddings]
+    # Service used by the run_virtualizer_query MCP tool. None when no Virtualizer is configured.
+    virtualizer_service: Optional[VirtualizerService]
 
+    # pylint: disable-next=too-many-positional-arguments
     def __init__(
         self,
         gateway_endpoint: Optional[str] = None,
         llm_timeout: int = 30,
         opensearch_url: Optional[str] = None,
         embeddings_endpoint: Optional[str] = None,
+        virtualizer_host: Optional[str] = None,
+        virtualizer_port: Optional[int] = None,
+        virtualizer_timeout: int = 60,
     ):
         """
         Initializes the SimpleMcpChain.
@@ -65,6 +79,10 @@ class SimpleMcpChain(BaseGenAiChain):
         :param embeddings_endpoint: The ID of the model group in Stratio GenAI LiteLLM pointing
             to the embedding model. If not provided, the generate_embeddings MCP tool is not
             registered.
+        :param virtualizer_host: The host of the Virtualizer server. If not provided (or
+            virtualizer_port is not), the run_virtualizer_query MCP tool is not registered.
+        :param virtualizer_port: The port of the Virtualizer server.
+        :param virtualizer_timeout: Timeout of the Virtualizer queries, default is 60 seconds.
         """
         log.info("Preparing Simple MCP Example chain")
         self.mad_hatter_actor = None
@@ -91,6 +109,16 @@ class SimpleMcpChain(BaseGenAiChain):
         else:
             log.info(
                 "No embeddings_endpoint configured: generate_embeddings MCP tool disabled"
+            )
+        self.virtualizer_service = None
+        if virtualizer_host and virtualizer_port:
+            self.virtualizer_service = self._init_virtualizer(
+                virtualizer_host, int(virtualizer_port), virtualizer_timeout
+            )
+        else:
+            log.info(
+                "No virtualizer_host/virtualizer_port configured: "
+                "run_virtualizer_query MCP tool disabled"
             )
         log.info("Simple MCP Example chain ready!")
 
@@ -127,6 +155,56 @@ class SimpleMcpChain(BaseGenAiChain):
             log.error(error_msg)
             raise RuntimeError(error_msg) from error
         return opensearch_service
+
+    @staticmethod
+    def _init_virtualizer(
+        virtualizer_host: str, virtualizer_port: int, virtualizer_timeout: int
+    ) -> VirtualizerService:
+        """Initializes the Virtualizer service, as in example-chain-virtualizer.
+
+        The chain connects with its own identity (the GENAI_API_SERVICE_NAME service,
+        authenticated with the certificates from Vault) and each query is then run
+        impersonating the nominal user (EXECUTE AS). For local development, set the
+        GENAI_API_SERVICE_NAME and VAULT_LOCAL_* environment variables, and
+        VIRTUALIZER_BASE_PATH (e.g. /service/virtualizer) when going through the
+        developer proxy.
+
+        :param virtualizer_host: The host of the Virtualizer server.
+        :param virtualizer_port: The port of the Virtualizer server.
+        :param virtualizer_timeout: Timeout of the Virtualizer queries, in seconds.
+        :return: The connected Virtualizer service.
+        """
+        try:
+            service_name = os.environ[ENV_VAR_GENAI_API_SERVICE_NAME]
+            vault = VaultClient()
+            cert, key = vault.get_service_certificate_pem_paths()
+            ca = vault.get_ca_bundle_pem_path()
+            log.info(
+                f"Trying to connect with Virtualizer {virtualizer_host}:{virtualizer_port}..."
+            )
+            # Always through the helper, so that only one instance is ever created
+            VirtualizerServiceHelper.init_service(
+                host=virtualizer_host,
+                port=virtualizer_port,
+                username=service_name,
+                ca_certs=ca,
+                client_cert=cert,
+                client_key=key,
+                max_attempts=3,
+                request_timeout=virtualizer_timeout,
+            )
+            virtualizer_service = VirtualizerServiceHelper.get_service()
+            test_query = virtualizer_service.data_query("SELECT 1")
+            if not test_query.successful:
+                raise RuntimeError(
+                    f"{test_query.exception}: {test_query.original_exception_msg}"
+                )
+            log.info("Connected with Virtualizer")
+        except Exception as error:
+            error_msg = f"Unable to init Simple MCP chain. Unable to connect with Virtualizer. Error: {error}"
+            log.error(error_msg)
+            raise RuntimeError(error_msg) from error
+        return virtualizer_service
 
     def chain(self) -> Runnable:
         """Returns a Runnable that computes basic statistics for the input text.
@@ -166,7 +244,8 @@ class SimpleMcpChain(BaseGenAiChain):
                 "requests with a rhyming riddle, tools to run OpenSearch queries and "
                 "create and describe indices, a tool to generate text embeddings, and "
                 "RAG tools to add records to a vector index (computing their vectors) "
-                "and to retrieve the chunks most similar to a question."
+                "and to retrieve the chunks most similar to a question, and a tool "
+                "to run SQL queries on Stratio Virtualizer."
             ),
         )
 

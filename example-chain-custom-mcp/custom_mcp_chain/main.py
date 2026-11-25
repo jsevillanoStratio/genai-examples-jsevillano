@@ -15,33 +15,6 @@ from dotenv import load_dotenv
 load_dotenv(".local_env/genai-env.env", override=True)
 
 
-def patch_litellm_keos_routes():
-    """
-    LOCAL DEVELOPMENT WORKAROUND - do not commit.
-
-    The GenAI Developer Proxy 0.6.x does not expose genai-litellm, so we call LiteLLM directly through
-    its ingress with an API key. The Stratio '/keos/*' routes reject API keys (they require the mTLS identity),
-    so they are redirected to the standard LiteLLM routes, which return the same data shape.
-    Remove it once the Developer Proxy is upgraded to 0.7.x with genai-litellm enabled.
-    """
-    from genai_core.clients.gateway.litellm_gateway_client import LitellmGatewayClient
-
-    keos_to_standard_routes = {
-        "/keos/models": "/v1/model/info",
-        "/keos/models/groups": "/model_group/info",
-    }
-    original_request_keos = LitellmGatewayClient._request_keos
-
-    def _request_keos(self, url, params):
-        return original_request_keos(self, keos_to_standard_routes.get(url, url), params)
-
-    LitellmGatewayClient._request_keos = _request_keos
-
-
-if os.environ.get("GENAI_LITELLM_API_KEY") and os.environ.get("PATCH_LITELLM_KEOS_ROUTES", "false").lower() == "true":
-    patch_litellm_keos_routes()
-    #pass
-
 def main(chain_config):
     """
     Starts a stand-alone GenAI-api-like server with the chain loaded.
@@ -85,6 +58,8 @@ def main(chain_config):
     - add_records / vector_search: index records computing their vectors from
       {"$embed": "<field>"} pointers, and retrieve the chunks most similar to a
       question (only when both "opensearch_url" and "embeddings_endpoint" are set).
+    - run_virtualizer_query: runs a SQL query on Stratio Virtualizer impersonating the
+      user (only when "virtualizer_host" and "virtualizer_port" are configured).
     """
     app = GenAiServer(
         module_name="custom_mcp_chain.chain",
@@ -110,5 +85,11 @@ if __name__ == "__main__":
         # embeddings_endpoint: The ID of the model group in Stratio GenAI LiteLLM pointing to
         # an embedding model. Remove it to disable the generate_embeddings MCP tool.
         "embeddings_endpoint": "text-embedding-3-large",
+        # Virtualizer reachable from your local machine (the developer proxy). It also needs
+        # GENAI_API_SERVICE_NAME, the VAULT_LOCAL_* certificates and VIRTUALIZER_BASE_PATH
+        # (/service/virtualizer) env vars. Leave VIRTUALIZER_HOST unset to disable the
+        # run_virtualizer_query MCP tool.
+        "virtualizer_host": os.getenv("VIRTUALIZER_HOST"),
+        "virtualizer_port": os.getenv("VIRTUALIZER_PORT"),
     }
     main(chain_config)

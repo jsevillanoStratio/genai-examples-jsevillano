@@ -20,3 +20,7 @@ CHAIN_KEY_USER_NAME = "username"
 # Limits of the vector index MCP tools
 ADD_RECORDS_MAX_RECORDS = 500
 VECTOR_SEARCH_MAX_K = 100
+
+# Limits of the run_virtualizer_query MCP tool (rows returned to the agent)
+VIRTUALIZER_QUERY_DEFAULT_LIMIT = 100
+VIRTUALIZER_QUERY_MAX_LIMIT = 1000
